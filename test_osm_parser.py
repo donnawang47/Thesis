@@ -77,6 +77,11 @@ class OSMHandler(osmium.SimpleHandler):
             print(f"Error processing relation {r.id}: {e}")
 
     def get_data(self):
+        # Print the sizes of the collections
+        print(f"Number of nodes: {len(self.nodes)}")
+        print(f"Number of ways: {len(self.ways)}")
+        print(f"Number of relations: {len(self.relations)}")
+
         return {
             "nodes": self.nodes,
             "ways": self.ways,

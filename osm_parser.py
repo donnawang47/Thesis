@@ -15,38 +15,46 @@ from botocore.exceptions import ClientError
 class OSMHandler(osmium.SimpleHandler):
     def __init__(self):
         osmium.SimpleHandler.__init__(self)
-        self.nodes = []
+        self.nodes = {}
         self.ways = []
         self.relations = []
 
     # Method to handle nodes
     def node(self, n):
         try:
-            item = {
-                "osm_id": str(n.id),
-                "type": "node",
+            self.nodes[str(n.id)] = {
+                "id": str(n.id),
                 "coordinates": {
-                    "latitude": n.location.lat,
-                    "longitude": n.location.lon,
+                    "latitude": {"N": str(Decimal(n.location.lat))},
+                    "longitude": {"N": str(Decimal(n.location.lon))}
                 },
                 "tags": {tag.k: tag.v for tag in n.tags},
+                "adjacency_list": []  # Initialize adjacency list
             }
-            # Append the node data to the nodes list
-            self.nodes.append(item)
         except Exception as e:
             print(f"Error processing node {n.id}: {e}")
 
     # Method to handle ways
     def way(self, w):
         try:
-            item = {
-                "osm_id": str(w.id),
+            node_refs = [str(n.ref) for n in w.nodes]
+            # Build the adjacency list for each node in the way
+            for i, node_ref in enumerate(node_refs):
+                if node_ref in self.nodes:
+                    # Add neighboring nodes to the adjacency list
+                    if i > 0:  # Add the previous node in the way
+                        self.nodes[node_ref]["adjacency_list"].append(node_refs[i - 1])
+                    if i < len(node_refs) - 1:  # Add the next node in the way
+                        self.nodes[node_ref]["adjacency_list"].append(node_refs[i + 1])
+            # Store the way information
+            way_item = {
+                "id": str(w.id),
                 "type": "way",
-                "nodes": [{"latitude": n.lat, "longitude": n.lon} for n in w.nodes],
+                "nodes": node_refs,
                 "tags": {tag.k: tag.v for tag in w.tags},
             }
-            # Append the way data to the ways list
-            self.ways.append(item)
+            self.ways.append(way_item)
+
         except Exception as e:
             print(f"Error processing way {w.id}: {e}")
 
@@ -54,7 +62,7 @@ class OSMHandler(osmium.SimpleHandler):
     def relation(self, r):
         try:
             item = {
-                "osm_id": str(r.id),
+                "id": str(r.id),
                 "type": "relation",
                 "members": [{"type": m.type, "ref": m.ref, "role": m.role} for m in r.members],
                 "tags": {tag.k: tag.v for tag in r.tags},
@@ -122,8 +130,8 @@ class OSM:
     def insert_item(self, item):
         try:
             # Put the item into the DynamoDB table
-            response = table.put_item(Item=item)
-            print(f"Successfully inserted: {item['osm_id']}")
+            response = self.table.put_item(Item=item)
+            print(f"Successfully inserted: {item['id']}")
         except ClientError as err:
             logger.error(
                 "Couldn't add item to table %s. Here's why: %s: %s",
@@ -136,8 +144,8 @@ class OSM:
     # Insert lists of nodes, ways, and relations into DynamoDB
     def insert_osm_data(self, nodes, ways, relations):
         # Insert nodes
-        for node in nodes:
-            self.insert_item(node)
+        for node_id, node_data in nodes.items():
+            self.insert_item(node_data)
 
         # Insert ways
         for way in ways:
@@ -164,7 +172,7 @@ def list_tables(dyn_resource):
 def clear_tables(dyn_resource):
     try:
         for table in dyn_resource.tables.all():
-            if table.name in ['retwis-users', 'tweets']:
+            if table.name in ['osm']:
                 print("Deleting table:", table.name)
                 table.delete()
     except ClientError as err:
@@ -177,17 +185,20 @@ def clear_tables(dyn_resource):
 
 if __name__ == "__main__":
 
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('-r', '--region', type=str, required=True)
+    # parser.add_argument('-s', '--source', type=str, required=True)
+    # parser.add_argument('-c', '--clear', action='store_true', default=False, help="Drop all the tables")
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-r', '--region', type=str, required=True)
-    parser.add_argument('-s', '--source', type=str, required=True)
-    parser.add_argument('-c', '--clear', action='store_true', default=False, help="Drop all the tables")
+    # args = parser.parse_args()
 
-    args = parser.parse_args()
+    # dynamodb = boto3.resource('dynamodb', region_name=args.region)
 
-    dynamodb = boto3.resource('dynamodb', region_name=args.region)
+    region = 'us-east-1'
+    dynamodb = boto3.resource('dynamodb', region_name=region)
 
-    if args.clear:
+    clear = False
+    if clear:
         clear_tables(dynamodb)
         print("Exiting because the delete operation takes a bit of time.")
         exit(0)
@@ -204,10 +215,10 @@ if __name__ == "__main__":
             table.table = dynamodb.Table(table.table_name)
 
 
-    osm_file_path = "map.osm"
+    osm_file_path = "map_mini.osm"
     osm_data = parse_osm_file(osm_file_path)
 
-    osm_table.insert_all_data(osm_data['nodes'], osm_data['ways'], osm_data['relations'])
+    osm_table.insert_osm_data(osm_data['nodes'], osm_data['ways'], osm_data['relations'])
 
 
 
