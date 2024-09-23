@@ -25,10 +25,8 @@ class OSMHandler(osmium.SimpleHandler):
             # node dict
             self.nodes[str(n.id)] = {
                 "osm_id": str(n.id),
-                "coordinates": {
-                    "latitude": n.location.lat,
-                    "longitude": n.location.lon,
-                },
+                "latitude": n.location.lat,
+                "longitude": n.location.lon,
                 "tags": {tag.k: tag.v for tag in n.tags},
                 "adjacency_list": []  # Initialize adjacency list
             }

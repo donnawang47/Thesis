@@ -24,10 +24,9 @@ class OSMHandler(osmium.SimpleHandler):
         try:
             self.nodes[str(n.id)] = {
                 "id": str(n.id),
-                "coordinates": {
-                    "latitude": {"N": str(Decimal(n.location.lat))},
-                    "longitude": {"N": str(Decimal(n.location.lon))}
-                },
+                "type": "node",
+                "latitude" : Decimal(str(n.location.lat)),
+                "longitude" : Decimal(str(n.location.lon)),
                 "tags": {tag.k: tag.v for tag in n.tags},
                 "adjacency_list": []  # Initialize adjacency list
             }
@@ -147,13 +146,13 @@ class OSM:
         for node_id, node_data in nodes.items():
             self.insert_item(node_data)
 
-        # Insert ways
-        for way in ways:
-            self.insert_item(way)
+        # # Insert ways
+        # for way in ways:
+        #     self.insert_item(way)
 
-        # Insert relations
-        for relation in relations:
-            self.insert_item(relation)
+        # # Insert relations
+        # for relation in relations:
+        #     self.insert_item(relation)
 
 def list_tables(dyn_resource):
     tables = []
