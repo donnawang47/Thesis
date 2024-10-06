@@ -82,6 +82,31 @@ async fn test_get_shortest_path(client: Client, table_name: String){
 
 }
 
+async fn test_get_shortest_path_multiple(client: Client, table_name: String) {
+
+    // point 1
+    //  {'osm_id': '103978126', 'latitude': 40.3465896, 'longitude': -74.6646682, 'tags': {}, 'adjacency_list': ['11124620695']}
+
+    // point 2
+    // {'osm_id': '7889842637', 'latitude': 40.3462607, 'longitude': -74.6639481, 'tags': {}, 'adjacency_list': ['11124620695', '6119864729']}
+
+    // point 3
+    // {'osm_id': '104052241', 'latitude': 40.3458467, 'longitude': -74.6630416, 'tags': {}, 'adjacency_list': ['6119864729', '104052245']}
+
+    // "103978126", "11124620695", "7889842637", "6119864729", "104052241",
+
+    let points = vec![
+        (40.3465896, -74.6646682),
+        (40.3462607, -74.6639481),
+        (40.3458467, -74.6630416),
+    ];
+
+    let path = get_shortest_path_multiple(client, table_name.to_string(), points).await;
+    // Print the result of the shortest path
+    println!("Shortest path: {:?}", path);
+
+}
+
 async fn get_shortest_path(client: Client, table_name: String, start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> Vec<String> {
 
     let src_node = database::query_node_by_coordinates(&client, table_name.to_string(), start_lat, start_lon).await.unwrap();
@@ -142,26 +167,7 @@ async fn main() -> io::Result<()> {
 
     let table_name = "osm";
 
-    // point 1
-    //  {'osm_id': '103978126', 'latitude': 40.3465896, 'longitude': -74.6646682, 'tags': {}, 'adjacency_list': ['11124620695']}
 
-    // point 2
-    // {'osm_id': '7889842637', 'latitude': 40.3462607, 'longitude': -74.6639481, 'tags': {}, 'adjacency_list': ['11124620695', '6119864729']}
-
-    // point 3
-    // {'osm_id': '104052241', 'latitude': 40.3458467, 'longitude': -74.6630416, 'tags': {}, 'adjacency_list': ['6119864729', '104052245']}
-
-    // "103978126", "11124620695", "7889842637", "6119864729", "104052241",
-
-    let points = vec![
-        (40.3465896, -74.6646682),
-        (40.3462607, -74.6639481),
-        (40.3458467, -74.6630416),
-    ];
-
-    let path = get_shortest_path_multiple(client, table_name.to_string(), points).await;
-    // Print the result of the shortest path
-    println!("Shortest path: {:?}", path);
 
     Ok(())
 }
