@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
+pub mod graph_edges_parser;
+
 pub struct Vertex {
     pub id: i32,
 }
