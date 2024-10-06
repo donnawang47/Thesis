@@ -167,7 +167,7 @@ async fn main() -> io::Result<()> {
 
     let table_name = "osm";
 
-
+    test_get_shortest_path_multiple(client, table_name.to_string()).await;
 
     Ok(())
 }

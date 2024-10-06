@@ -69,6 +69,57 @@ pub async fn query_nodes_by_id(client: &Client,
 }
 
 pub async fn query_node_by_coordinates(client: &Client,
+    table_name: String, latitude: f64, longitude: f64) -> Option<Node> {
+
+    // Set the latitude and longitude range (+/- 0.0001)
+    let delta = 0.0001;
+    let lat_min = latitude - delta;
+    let lat_max = latitude + delta;
+    let lon_min = longitude - delta;
+    let lon_max = longitude + delta;
+
+    /**
+     *  aws dynamodb query --table-name osm --index-name CoordinateIndex --key-condition-expression "longitude BETWEEN :lon_min AND :lon_max and latitude BETWEEN :lat_min AND :lat_max" --expression-attribute-values "{\":lat_min\":{\"N\":\"35.0\"}, \":lat_max\":{\"N\":\"45.0\"}, \":lon_min\":{\"N\":\"-80.0\"}, \":lon_max\":{\"N\":\"-70.0\"}}"
+     *
+     * aws dynamodb query --table-name osm --index-name CoordinateIndex --key-condition-expression "longitude BETWEEN :lon_min AND :lon_max" --filter-expression "latitude BETWEEN :lat_min AND :lat_max" --expression-attribute-values "{\":lat_min\":{\"N\":\"35.0\"}, \":lat_max\":{\"N\":\"45.0\"}, \":lon_min\":{\"N\":\"-80.0\"}, \":lon_max\":{\"N\":\"-70.0\"}}"
+
+
+     */
+
+    let query_op = client
+        .query()
+        .table_name(table_name)
+        .index_name("CoordinateIndex")
+        .key_condition_expression("longitude BETWEEN :lon_min AND :lon_max and latitude BETWEEN :lat_min AND :lat_max")
+        .expression_attribute_values(":lat_min", AttributeValue::N(lat_min.to_string()))
+        .expression_attribute_values(":lat_max", AttributeValue::N(lat_max.to_string()))
+        .expression_attribute_values(":lon_min", AttributeValue::N(lon_min.to_string()))
+        .expression_attribute_values(":lon_max", AttributeValue::N(lon_max.to_string()))
+        .send()
+        .await;
+
+    match query_op {
+        Ok(output) => {
+            if let Some(items) = output.items {
+                let nodes: Vec<Node> = from_items(items).unwrap();
+                println!("Got {} nodes", nodes.len());
+
+                // Find the closest node from the queried nodes
+                let closest_node = find_closest_node(nodes.clone(), latitude, longitude);
+                return closest_node;
+            } else {
+                println!("No items found.");
+            }
+        }
+        Err(err) => {
+            println!("Error querying items: {}", err);
+        }
+    }
+
+    None
+}
+
+pub async fn scan_node_by_coordinates(client: &Client,
     table_name: String,latitude: f64, longitude: f64) -> Option<Node> {
 
     // Set the latitude and longitude range (+/- 5)

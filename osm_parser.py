@@ -11,6 +11,10 @@ import osmium
 import boto3
 from botocore.exceptions import ClientError
 
+# Configure the logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
+
 # Define a handler class to extract nodes, ways, and relations from the .osm file
 class OSMHandler(osmium.SimpleHandler):
     def __init__(self):
@@ -92,11 +96,12 @@ class OSM:
         self.dyn_resource = dyn_resource
         self.table_name = "osm"
         self.table = None
+
     def create_table(self):
         try:
             self.table = self.dyn_resource.create_table(
                 TableName=self.table_name,
-                # define partition key
+                # define partition key (HASH)
                 KeySchema=[
                     {
                         'AttributeName': 'id',
@@ -106,13 +111,35 @@ class OSM:
                 AttributeDefinitions=[
                     {
                         'AttributeName': 'id',
-                        'AttributeType': 'S' # string type
+                        'AttributeType': 'S'  # string type for node_id
                     }
                 ],
                 ProvisionedThroughput={
                     'ReadCapacityUnits': 10,
                     'WriteCapacityUnits': 10
-                }
+                },
+                GlobalSecondaryIndex=[
+                    {
+                        'IndexName': 'CoordinateIndex',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'longitude',
+                                'KeyType': 'RANGE'
+                            },
+                            {
+                                'AttributeName': 'latitude',
+                                'KeyType': 'RANGE'
+                            }
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'  # Include all attributes in index
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 10,
+                            'WriteCapacityUnits': 10
+                        }
+                    }
+                ]
             )
         except ClientError as err:
             logger.error(
@@ -182,6 +209,57 @@ def clear_tables(dyn_resource):
         )
         raise
 
+def update_dynamodb_with_gsi():
+    dynamodb = boto3.client('dynamodb')
+
+    try:
+        # Update the DynamoDB table
+        response = dynamodb.update_table(
+            TableName="osm",
+            AttributeDefinitions=[
+                {
+                    'AttributeName': 'id',
+                    'AttributeType': 'S'  # string type for node_id
+                },
+                {
+                    'AttributeName': 'longitude',
+                    'AttributeType': 'N'
+                },
+                {
+                    'AttributeName': 'latitude',
+                    'AttributeType': 'N'
+                }
+            ],
+            # Define Global Secondary Index for querying by longitude and latitude
+            GlobalSecondaryIndexUpdates=[
+                {
+                    'Create': {
+                        'IndexName': 'CoordinateIndex',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'longitude',
+                                'KeyType': 'HASH'  # Change to HASH for the partition key
+                            },
+                            {
+                                'AttributeName': 'latitude',
+                                'KeyType': 'RANGE'  # This is the sort key
+                            }
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'  # Include all attributes in index
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 10,
+                            'WriteCapacityUnits': 10
+                        }
+                    }
+                }
+            ]
+        )
+        print("Update Table succeeded:", response)
+    except ClientError as e:
+        print("Error updating table:", e.response['Error']['Message'])
+
 if __name__ == "__main__":
 
     # parser = argparse.ArgumentParser()
@@ -195,6 +273,11 @@ if __name__ == "__main__":
 
     region = 'us-east-1'
     dynamodb = boto3.resource('dynamodb', region_name=region)
+
+    update = True
+    if update:
+        update_dynamodb_with_gsi()
+        exit(0)
 
     clear = False
     if clear:
