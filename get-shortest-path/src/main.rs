@@ -67,6 +67,15 @@ async fn main() -> Result<(), Error> {
     /**
      * cargo lambda invoke --data-ascii '{ \"points\": [[40.3465896, -74.6646682], [40.3462607, -74.6639481], [40.3458467, -74.6630416]] }'
      */
+
+    /**
+     aws lambda create-function ^ --function-name get-shortest-path ^ --runtime provided.al2023 ^ --role arn:aws:iam::794038227290:role/lambda ^ --handler get-shortest-path.function_handler ^ --zip-file fileb://C:/Users/dwang/Thesis/get-shortest-path/target/lambda/get-shortest-path/bootstrap.zip
+
+     aws lambda invoke ^ --cli-binary-format raw-in-base64-out ^ --function-name get-shortest-path ^ --cli-binary-format raw-in-base64-out ^ --payload "{ \"points\": [[40.3465896, -74.6646682], [40.3462607, -74.6639481], [40.3458467, -74.6630416]] }" ^ response.json
+
+
+     *
+     */
     tracing::init_default_subscriber();
 
     run(service_fn(function_handler)).await
