@@ -226,10 +226,7 @@ async fn main() -> io::Result<()> {
     // test_get_adj_nodes(&pool).await;
     // test_get_node_by_id(&pool).await;
     // test_get_shortest_path(&pool).await;
-
-
-
-
+    test_get_shortest_path_multiple(&pool).await;
 
     drop(pool); // This will close all connections in the pool
     Ok(())

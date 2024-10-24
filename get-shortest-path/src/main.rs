@@ -1,15 +1,18 @@
+
 use lambda_runtime::{run, service_fn, tracing, Error, LambdaEvent};
 
 use serde::{Deserialize, Serialize};
 
-use aws_sdk_dynamodb as dynamodb;
-use dynamodb::{types::AttributeValue, Client};
-use serde_dynamo::aws_sdk_dynamodb_1::from_items;
-use serde_dynamo::aws_sdk_dynamodb_1::from_item;
+use sqlx::{postgres::PgPoolOptions};
+use std::io;
+use sqlx::FromRow;
 use geoutils::{Location};
 
-use std::collections::{HashMap,BinaryHeap};
+use std::collections::{HashMap, BinaryHeap};
 use std::cmp::Ordering;
+
+use dotenv::dotenv;
+use std::env;
 
 /// This is a made-up example. Requests come into the runtime as unicode
 /// strings in json format, which can map to any structure that implements `serde::Deserialize`
@@ -28,7 +31,12 @@ struct Request {
 struct Response {
     // req_id: String,
     // msg: String,
-    path: Vec<String>,
+    path: Vec<i32>,
+}
+
+pub fn load_config() -> String {
+    dotenv().ok();
+    env::var("DATABASE_URL").expect("DATABASE_URL must be set")
 }
 
 /// This is the main body for the function.
@@ -37,230 +45,184 @@ struct Response {
 /// - https://github.com/awslabs/aws-lambda-rust-runtime/tree/main/examples
 /// - https://github.com/aws-samples/serverless-rust-demo/
 async fn function_handler(event: LambdaEvent<Request>) -> Result<Response, Error> {
-    // // Extract some useful info from the request
+
+    // Extract some useful info from the request
     // let command = event.payload.command;
 
-    // // Prepare the response
+    // Prepare the response
     // let resp = Response {
     //     req_id: event.context.request_id,
     //     msg: format!("Command {}.", command),
     // };
 
-    // // Return `Response` (it will be serialized to JSON automatically by the runtime)
+    // Return `Response` (it will be serialized to JSON automatically by the runtime)
     // Ok(resp)
 
-    let config = aws_config::load_from_env().await;
-    let client = aws_sdk_dynamodb::Client::new(&config);
-    let table_name = "osm".to_string();
+
+    let config = load_config();
+    let pool = create_pool(&config).await?;
 
     let points = event.payload.points;
 
-    let path = get_shortest_path_multiple(client, table_name, points).await;
+    let result = get_shortest_path_multiple(&pool, points).await;
+
+    let path = match result {
+        Ok(p) => p.into_iter().map(|x| x as i32).collect(), // Convert Vec<i64> to Vec<i32> if necessary
+        Err(e) => {
+            // Handle error (log it, return it, etc.)
+            return Err(Box::new(e));
+        }
+    };
 
     let resp = Response { path };
 
     Ok(resp)
+
+
 }
+
+
+/**
+aws lambda create-function ^ --function-name get-shortest-path ^ --runtime provided.al2023 ^ --role arn:aws:iam::761018850184:role/lambda ^ --handler get-shortest-path.function_handler ^ --zip-file fileb://C:\Users\dwang\Thesis\get-shortest-path\target\lambda\extensions\get-shortest-path.zip
+
+aws lambda invoke ^ --cli-binary-format raw-in-base64-out ^ --function-name get-shortest-path ^ --cli-binary-format raw-in-base64-out ^ --payload '{ \"points\": [[40.351712, -74.663318], [40.351305, -74.6633467], [40.35054, -74.6630122]] }' ^ response.json
+
+
+cargo lambda invoke --data-ascii '{ \"points\": [[40.351712, -74.663318], [40.351305, -74.6633467], [40.35054, -74.6630122]] }'
+
+*/
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    /**
-     * cargo lambda invoke --data-ascii '{ \"points\": [[40.3465896, -74.6646682], [40.3462607, -74.6639481], [40.3458467, -74.6630416]] }'
-     */
-
-    /**
-     aws lambda create-function ^ --function-name get-shortest-path ^ --runtime provided.al2023 ^ --role arn:aws:iam::794038227290:role/lambda ^ --handler get-shortest-path.function_handler ^ --zip-file fileb://C:/Users/dwang/Thesis/get-shortest-path/target/lambda/get-shortest-path/bootstrap.zip
-
-     aws lambda invoke ^ --cli-binary-format raw-in-base64-out ^ --function-name get-shortest-path ^ --cli-binary-format raw-in-base64-out ^ --payload "{ \"points\": [[40.3465896, -74.6646682], [40.3462607, -74.6639481], [40.3458467, -74.6630416]] }" ^ response.json
-
-
-     *
-     */
     tracing::init_default_subscriber();
 
     run(service_fn(function_handler)).await
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Node {
-    pub id: String,
-    pub longitude: f64,
-    pub latitude: f64,
-    pub adjacency_list: Vec<String>,
+
+#[derive(Clone, Debug, Deserialize, FromRow)]
+pub struct RawNode {
+    pub id: i64,
+    pub lon: f64,
+    pub lat: f64,
+    pub adjacency_list: Vec<i64>
 }
 
-pub async fn query_node_by_id(
-    client: &Client,
-    table_name: String,
-    node_id: String,
-)  -> Option<Node> {
-
-
-    let query_op = client
-        .query()
-        .table_name(table_name)
-        .key_condition_expression("id = :node_id") // partition key = value (value placeholder :node_id)
-        .expression_attribute_values(":node_id", AttributeValue::S(node_id.to_string())) // specify key value pair to pass in
-        .send()
-        .await;
-
-    match query_op {
-        Ok(output) => {
-            // Print the output if the query was successful
-            if let Some(items) = output.items {
-                if let Some(item) = items.get(0) {
-                    let node: Node = from_item(item.clone()).unwrap();
-                    return Some(node.clone());
-                } else {
-                    println!("No items found.");
-                }
-            } else {
-                println!("No items found.");
-            }
-        }
-        Err(err) => {
-            // Print the error if the query failed
-            println!("Error querying items: {}", err);
-        }
-    }
-
-    None
+pub async fn create_pool(database_url: &str) -> Result<sqlx::PgPool, io::Error> {
+    PgPoolOptions::new()
+        .max_connections(5)
+        .connect(database_url)
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string())) // Convert sqlx::Error to io::Error
 }
 
-pub async fn query_nodes_by_id(client: &Client,
-    table_name: String,
-    node_ids: Vec<String>) -> Vec<Node> {
 
-    let mut nodes: Vec<Node> = Vec::new();
+// Function to fetch node details from planet_osm_point table
+pub async fn get_node_by_id(pool: &sqlx::PgPool, osm_id: i64) -> Result<RawNode, io::Error> {
+    // SQL query to select osm_id, longitude, latitude, and name from planet_osm_point
+    let query = r#"
+        SELECT
+            planet_osm_nodes.id,
+            (planet_osm_nodes.lon / 1e7)::FLOAT8 AS lon,
+            (planet_osm_nodes.lat / 1e7)::FLOAT8 AS lat,
+            adjacent_nodes.nodes AS adjacency_list
+        FROM
+            planet_osm_nodes
+        JOIN
+            adjacent_nodes ON planet_osm_nodes.id = adjacent_nodes.id
+        WHERE
+            planet_osm_nodes.id = $1;
+    "#;
 
-    for node_id in node_ids {
-        if let Some(node) = query_node_by_id(client, table_name.clone(), node_id).await { // Await the query_node_by_id
-            nodes.push(node.clone()); // Push the node if found
-            println!("node: {:?}", node);
-        }
-    }
-    nodes
+    // Execute the query and bind the OSM ID
+    let node = sqlx::query_as::<_, RawNode>(query)
+        .bind(osm_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+
+    // Return the node details
+    Ok(node)
 }
 
-pub async fn query_node_by_coordinates(client: &Client,
-    table_name: String, latitude: f64, longitude: f64) -> Option<Node> {
+pub async fn get_node_by_lat_lon(
+    pool: &sqlx::PgPool,
+    latitude: f64,
+    longitude: f64
+) -> Result<Option<RawNode>, io::Error> {
+    let tolerance = 5.0;
 
-    // Set the latitude and longitude range (+/- 0.0001)
-    let delta = 0.0001;
-    let lat_min = latitude - delta;
-    let lat_max = latitude + delta;
-    let lon_min = longitude - delta;
-    let lon_max = longitude + delta;
+    let query = r#"
+        WITH nearest_point AS (
+            SELECT
+                osm_id,
+                ST_X(ST_Transform(way, 4326)) AS longitude,
+                ST_Y(ST_Transform(way, 4326)) AS latitude
+            FROM
+                planet_osm_point
+            WHERE
+                ST_DWithin(
+                    ST_Transform(way, 3857),
+                    ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
+                    1000.0  -- Set your desired distance threshold in meters
+                )
+            ORDER BY
+                ST_Distance(ST_Transform(way, 4326), ST_SetSRID(ST_MakePoint($1, $2), 4326))
+            LIMIT 1
+        )
+        SELECT
+            n.id,
+            (n.lon / 1e7)::FLOAT8 AS lon,
+            (n.lat / 1e7)::FLOAT8 AS lat,
+            a.nodes AS adjacency_list
+        FROM
+            planet_osm_nodes n
+        JOIN
+            nearest_point np ON n.id = np.osm_id
+        JOIN
+            adjacent_nodes a ON a.id = np.osm_id;  -- Join with the adjacent_nodes table
+    "#;
 
-    // Use Query instead of Scan for efficiency
-    let query_op = client
-    .scan()
-    .table_name(table_name)
-    .filter_expression("latitude BETWEEN :lat_min AND :lat_max AND longitude BETWEEN :lon_min AND :lon_max")
-    .expression_attribute_values(":lat_min", AttributeValue::N(lat_min.to_string()))
-    .expression_attribute_values(":lat_max", AttributeValue::N(lat_max.to_string()))
-    .expression_attribute_values(":lon_min", AttributeValue::N(lon_min.to_string()))
-    .expression_attribute_values(":lon_max", AttributeValue::N(lon_max.to_string()))
-    .send()
-    .await;
+    let node = sqlx::query_as::<_, RawNode>(query)
+        .bind(longitude)
+        .bind(latitude)
+        .bind(tolerance)
+        .fetch_one(pool)  // This will fetch a single row
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-    match query_op {
-        Ok(output) => {
-            if let Some(items) = output.items {
-                let nodes: Vec<Node> = from_items(items).unwrap();
-                println!("Got {} nodes", nodes.len());
+    Ok(Some(node))
 
-                // Find the closest node from the queried nodes
-                let closest_node = find_closest_node(nodes.clone(), latitude, longitude);
-                return closest_node;
-            } else {
-                println!("No items found.");
-            }
-        }
-        Err(err) => {
-            println!("Error querying items: {}", err);
-        }
-    }
-
-    None
 }
 
-pub async fn scan_node_by_coordinates(client: &Client,
-    table_name: String,latitude: f64, longitude: f64) -> Option<Node> {
 
-    // Set the latitude and longitude range (+/- 5)
-    let delta = 0.0001;
-    let lat_min = latitude - delta;
-    let lat_max = latitude + delta;
-    let lon_min = longitude - delta;
-    let lon_max = longitude + delta;
 
-    let scan_op = client
-    .scan()
-    .table_name(table_name)
-    .filter_expression("latitude BETWEEN :lat_min AND :lat_max AND longitude BETWEEN :lon_min AND :lon_max")
-    .expression_attribute_values(":lat_min", AttributeValue::N(lat_min.to_string()))
-    .expression_attribute_values(":lat_max", AttributeValue::N(lat_max.to_string()))
-    .expression_attribute_values(":lon_min", AttributeValue::N(lon_min.to_string()))
-    .expression_attribute_values(":lon_max", AttributeValue::N(lon_max.to_string()))
-    .send()
-    .await;
+pub async fn get_adjacent_nodes(pool: &sqlx::PgPool, osm_id: i64) -> Result<Vec<RawNode>, io::Error>{
+    // Prepare the SQL query
+    let query = r#"
+        WITH adjacent AS (
+            SELECT nodes FROM adjacent_nodes WHERE id = 103994771
+        )
+        SELECT
+            n.id,
+            (n.lon / 1e7)::FLOAT8 AS lon,
+            (n.lat / 1e7)::FLOAT8 AS lat,
+            a.nodes AS adjacency_list
+        FROM
+            planet_osm_nodes n
+        JOIN
+            adjacent a ON n.id = ANY(a.nodes);
 
-    match scan_op {
-        Ok(output) => {
-            if let Some(items) = output.items {
-                let nodes: Vec<Node> = from_items(items).unwrap();
-                println!("Got {} nodes", nodes.len());
-                let closest_node = find_closest_node(nodes.clone(), latitude, longitude);
+    "#;
 
-                return closest_node;
-            } else {
-                println!("No items found.");
-            }
-        }
-        Err(err) => {
-            println!("Error scanning items: {}", err);
-        }
-    }
+    let nodes = sqlx::query_as::<_, RawNode>(query)
+        .bind(osm_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
 
-    None
-}
-
-fn find_closest_node(nodes:Vec<Node>, target_lat: f64, target_lon: f64) -> Option<Node> {
-    let target_location = Location::new(target_lat, target_lon);
-    let mut closest_node: Option<Node> = None;
-    let mut closest_distance = f64::MAX; // Initialize with the maximum possible value
-
-    for node in nodes {
-        let node_location = Location::new(node.latitude, node.longitude);
-        let distance = target_location.distance_to(&node_location).unwrap().meters(); // Get distance in meters
-
-        if distance < closest_distance {
-            closest_distance = distance;
-            closest_node = Some(node.clone());
-        }
-    }
-
-    closest_node.clone()
-}
-
-async fn get_adjacency_nodes_from_id(client: &Client,
-    table_name: String,
-    node_id: String,) -> Vec<Node> {
-
-    let node = query_node_by_id(&client, table_name.to_string(), node_id.to_string()).await;
-    match node {
-        Some(node) => {
-            println!("Adjacency List for Node {}: {:?}", node.id, node.adjacency_list);
-
-            let adjacency_nodes  = query_nodes_by_id(&client, table_name.to_string(), node.adjacency_list.clone()).await;
-
-            adjacency_nodes
-        },
-        None => {
-            Vec::new()
-        }
-    }
+    // Return the adjacency list
+    Ok(nodes)
 }
 
 
@@ -268,7 +230,7 @@ async fn get_adjacency_nodes_from_id(client: &Client,
 #[derive(Debug)]
 struct State {
     cost: f64,
-    node: Node,
+    node: RawNode,
 }
 
 
@@ -294,9 +256,9 @@ impl PartialEq for State {
 
 impl Eq for State {}
 
-fn reconstruct_path(predecessors: &HashMap<String, String>, start: &str, end: &str) -> Vec<String> {
+fn reconstruct_path(predecessors: &HashMap<i64, i64>, start: i64, end: i64) -> Vec<i64> {
     let mut path = Vec::new();
-    let mut current = end.to_string();
+    let mut current = end;
 
     while current != start {
         path.push(current.clone());
@@ -307,27 +269,29 @@ fn reconstruct_path(predecessors: &HashMap<String, String>, start: &str, end: &s
         }
     }
 
-    path.push(start.to_string());
+    path.push(start);
     path.reverse();
     path
 }
 
-fn get_distance(node_a: &Node, node_b: &Node) -> f64 {
-    let node_a_location = Location::new(node_a.latitude, node_a.longitude);
-    let node_b_location = Location::new(node_b.latitude, node_b.longitude);
+fn get_distance(node_a: &RawNode, node_b: &RawNode) -> f64 {
+    let node_a_location = Location::new(node_a.lat, node_a.lon);
+    let node_b_location = Location::new(node_b.lat, node_b.lon);
 
     let distance = node_a_location.distance_to(&node_b_location).unwrap().meters();
 
     distance
 }
 
-pub async fn dijkstra(client: &Client, table_name: String,src_node: Node, dest_node: Node) -> Vec<String> {
-    let mut distances: HashMap<String, f64> = HashMap::new();
-    let mut predecessors: HashMap<String, String> = HashMap::new();
+pub async fn dijkstra(pool: &sqlx::PgPool, src_node: RawNode, dest_node: RawNode) -> Vec<i64> {
+    // key = id, val = distance
+    let mut distances: HashMap<i64, f64> = HashMap::new();
+    // key = id, val = id
+    let mut predecessors: HashMap<i64, i64> = HashMap::new();
     let mut heap = BinaryHeap::new();
 
 
-    distances.insert(src_node.id.to_string(), 0.0);
+    distances.insert(src_node.id, 0.0);
     heap.push(State {
         cost: 0.0,
         node: src_node.clone(),
@@ -338,19 +302,19 @@ pub async fn dijkstra(client: &Client, table_name: String,src_node: Node, dest_n
             break;
         }
 
-        if cost > *distances.get(&node.id.to_string()).unwrap_or(&f64::MAX) {
+        if cost > *distances.get(&node.id).unwrap_or(&f64::MAX) {
             continue;
         }
 
         for next_node_id in node.adjacency_list.clone() {
-            let next_node = query_node_by_id(&client, table_name.to_string(), next_node_id.to_string()).await.unwrap();
+            let next_node = get_node_by_id(&pool, next_node_id).await.unwrap();
 
             let weight = get_distance(&node, &next_node);
             let next_cost = cost + weight;
 
             if next_cost < *distances.get(&next_node.id).unwrap_or(&f64::MAX) {
-                distances.insert(next_node.id.to_string(), next_cost);
-                predecessors.insert(next_node.id.to_string(), node.id.to_string().to_string());
+                distances.insert(next_node.id, next_cost);
+                predecessors.insert(next_node.id, node.id);
                 heap.push(State {
                     cost: next_cost,
                     node: next_node,
@@ -359,14 +323,8 @@ pub async fn dijkstra(client: &Client, table_name: String,src_node: Node, dest_n
         }
     }
 
-    let path = if distances.contains_key(&dest_node.id.to_string()) {
-        let distance = distances[&dest_node.id.to_string()];
-        let path = reconstruct_path(&predecessors, &src_node.id.to_string(), &dest_node.id.to_string());
-        // Print the distance and path
-        println!(
-            "Distance from node {} to node {}: {}\nPath: {:?}",
-            src_node.id.to_string(), dest_node.id.to_string(), distance, path
-        );
+    let path = if distances.contains_key(&dest_node.id) {
+        let path = reconstruct_path(&predecessors, src_node.id, dest_node.id);
         path
     } else {
         // Print the error message
@@ -378,46 +336,66 @@ pub async fn dijkstra(client: &Client, table_name: String,src_node: Node, dest_n
 
 }
 
+async fn get_shortest_path(pool: &sqlx::PgPool, start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> Result<Vec<i64>, io::Error> {
+    // Fetch the source node
+    let src_node = match get_node_by_lat_lon(pool, start_lat, start_lon).await {
+        Ok(Some(node)) => node,
+        Ok(None) => {
+            eprintln!("Source node not found");
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Source node not found")); // Return an io error
+        },
+        Err(e) => {
+            eprintln!("Error fetching source node: {:?}", e);
+            return Err(e); // Propagate the io error
+        }
+    };
 
-async fn get_shortest_path_multiple(client: Client, table_name: String, points: Vec<(f64, f64)>) -> Vec<String> {
+    // Fetch the destination node
+    let dest_node = match get_node_by_lat_lon(pool, end_lat, end_lon).await {
+        Ok(Some(node)) => node,
+        Ok(None) => {
+            eprintln!("Destination node not found");
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Destination node not found")); // Return an io error
+        },
+        Err(e) => {
+            eprintln!("Error fetching destination node: {:?}", e);
+            return Err(e); // Propagate the io error
+        }
+    };
 
-    // Check if there are at least two points to form a path
+    // Call the dijkstra function and return its result
+    let path = dijkstra(pool, src_node, dest_node).await;
+
+    Ok(path) // Return the path
+}
+
+async fn get_shortest_path_multiple(
+    pool: &sqlx::PgPool,
+    points: Vec<(f64, f64)>
+) -> Result<Vec<i64>, io::Error> {
+
     if points.len() < 2 {
-        println!("At least two points are required to calculate a path.");
-        return Vec::new();
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "At least two points are required to calculate a path."));
     }
 
-    let mut path: Vec<String> = Vec::new();
+    let mut full_path: Vec<i64> = Vec::new();
 
-    // Iterate through the points
+    // Loop through each consecutive pair of points
     for i in 0..points.len() - 1 {
         let (start_lat, start_lon) = points[i];
         let (end_lat, end_lon) = points[i + 1];
 
-        // Query the source and destination nodes
-        let src_node = query_node_by_coordinates(&client, table_name.clone(), start_lat, start_lon).await.unwrap();
-        let dest_node = query_node_by_coordinates(&client, table_name.clone(), end_lat, end_lon).await.unwrap();
+        // Get the shortest path between the current pair of points
+        let segment_path = get_shortest_path(pool, start_lat, start_lon, end_lat, end_lon).await?;
 
-        println!("get_shortest_path: start {}, end {}", src_node.id, dest_node.id);
-
-        // Calculate the shortest path using dijkstra's algorithm
-        let segment_path = dijkstra(&client, table_name.clone(), src_node, dest_node).await;
-
-        // Add the segment path to the overall path
-        // if second segment, dont include first node
         if i == 0 {
-            path.extend(segment_path);
+            // For the first segment, include the entire path
+            full_path.extend(segment_path);
+        } else if segment_path.len() > 1 {
+            // For subsequent segments, skip the first node to avoid duplication
+            full_path.extend(segment_path[1..].to_vec());
         }
-        else {
-            // Skip the first node of the segment_path
-            if segment_path.len() > 1 {
-                path.extend(segment_path[1..].to_vec()); // Use a range to skip the first node
-            }
-        }
-
     }
 
-    path
-
-
+    Ok(full_path)
 }
