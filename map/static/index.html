@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OSM Map with Route</title>
+
+  <!-- Include Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+  <style>
+    /* General body and layout styles */
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      min-height: 100vh;
+      margin: 0;
+      background-color: #f4f4f4;
+    }
+
+    /* Map container styles */
+    #map-frame {
+      width: 80%;
+      height: 70vh;
+      max-width: 1000px;
+      max-height: 700px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Route form styling */
+    #routeForm {
+      margin-top: 20px;
+      width: 100%;
+      max-width: 400px;
+      background-color: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Input field styling */
+    #routeForm textarea {
+      width: 100%;
+      padding: 12px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      margin-bottom: 15px;
+      resize: vertical;
+      box-sizing: border-box; /* Ensures padding is included in the width/height */
+      max-width: 100%; /* Prevents the textarea from overflowing horizontally */
+      max-height: 150px; /* Sets a maximum height to prevent vertical overflow */
+    }
+
+    /* Button styling */
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 10px;
+      transition: background-color 0.3s;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    button:focus {
+      outline: none;
+    }
+
+    #clearButton {
+      background-color: #f44336;
+    }
+
+    #clearButton:hover {
+      background-color: #e53935;
+    }
+
+    /* Responsive design for small screens */
+    @media (max-width: 600px) {
+      #routeForm {
+        width: 90%;
+        margin-top: 10px;
+      }
+
+      #map-frame {
+        height: 60vh;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Map container frame -->
+  <div id="map-frame">
+    <div id="map"></div>
+  </div>
+
+  <!-- Form to input coordinates -->
+  <form id="routeForm">
+    <textarea id="coords" placeholder="Enter coordinates as [lat1,lon1], [lat2,lon2], ..." rows="4"></textarea>
+
+    <button id="clearButton" type="button">Clear All</button>
+
+    <button id="routeButton" type="button">Show Route</button>
+  </form>
+
+  <!-- Include Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <script>
+    // Initialize the map and set the view
+    var map = L.map('map').setView([40.3495462, -74.6596951], 13);
+
+    // Add OpenStreetMap tile layer to the map
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    // Create arrays to store markers and route polylines
+    var markers = [];
+    var routePolyline;
+
+    // Function to handle clicks on the map
+    map.on('click', function(e) {
+      const lat = e.latlng.lat.toFixed(6);
+      const lng = e.latlng.lng.toFixed(6);
+
+      const coordsInput = document.getElementById('coords');
+      coordsInput.value += `[${lat},${lng}], `;
+
+      // Add marker on map and store in markers array
+      const marker = L.marker([lat, lng]).addTo(map);
+      markers.push(marker);
+
+      coordsInput.value = coordsInput.value.trim().replace(/,\s*$/, "");
+    });
+
+    // Function to parse the user input coordinates
+    function parseCoordinates(input) {
+      if (!input.trim()) throw new Error('Input cannot be empty.');
+
+      const coordinatePattern = /\[(-?\d+(\.\d+)?),\s*(-?\d+(\.\d+)?)\]/g;
+      const matches = [...input.matchAll(coordinatePattern)];
+
+      if (matches.length === 0) {
+        throw new Error('No valid coordinates found.');
+      }
+
+      return matches.map(match => [parseFloat(match[1]), parseFloat(match[3])]);
+    }
+
+    // Function to fetch and display the route
+    function fetchRoute() {
+      const input = document.getElementById('coords').value.trim();
+
+      try {
+        const points = parseCoordinates(input);
+
+        if (points.length < 2) {
+          alert('Please enter at least two points.');
+          return;
+        }
+
+        // Clear any existing markers from the map
+        markers.forEach(function(marker) {
+          map.removeLayer(marker);
+        });
+        markers = [];
+
+        // Add markers for all points in the input
+        points.forEach(function(point) {
+          const marker = L.marker([point[0], point[1]]).addTo(map);
+          markers.push(marker);
+        });
+
+        fetch('http://localhost:8000/route', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ points }),
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data && Array.isArray(data.path)) {
+            // Remove any existing routePolyline before adding a new one
+            if (routePolyline) {
+              map.removeLayer(routePolyline);
+            }
+
+            const route = data.path.map(point => [point[1], point[0]]);
+            routePolyline = L.polyline(route, {
+              color: 'blue',
+              weight: 4,
+              opacity: 0.7
+            }).addTo(map);
+            map.fitBounds(routePolyline.getBounds());
+          } else {
+            console.error('Invalid path data', data);
+          }
+        })
+        .catch(error => console.error('Error:', error));
+      } catch (error) {
+        alert('Invalid coordinates format. Please use the format: [lat1,lon1],[lat2,lon2],...');
+        console.error('Error parsing coordinates:', error);
+      }
+    }
+
+    // Add event listener for Show Route button
+    document.getElementById('routeButton').addEventListener('click', fetchRoute);
+
+    // Clear button functionality
+    document.getElementById('clearButton').addEventListener('click', function() {
+      // Clear coordinates input
+      document.getElementById('coords').value = '';
+
+      // Remove all markers from the map
+      markers.forEach(function(marker) {
+        map.removeLayer(marker);
+      });
+      markers = [];
+
+      // Remove any existing routePolyline from the map
+      if (routePolyline) {
+        map.removeLayer(routePolyline);
+        routePolyline = null;
+      }
+    });
+  </script>
+
+</body>
+</html>

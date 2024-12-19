@@ -143,7 +143,7 @@ async fn test_get_shortest_path_multiple(pool: &sqlx::PgPool) {
 
 }
 
-async fn get_shortest_path(pool: &sqlx::PgPool, start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> Result<Vec<i64>, io::Error> {
+async fn get_shortest_path(pool: &sqlx::PgPool, start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) ->  Result<Vec<[f64; 2]>, io::Error> {
     // Fetch the source node
     let src_node = match database::get_node_by_lat_lon(pool, start_lat, start_lon).await {
         Ok(Some(node)) => node,
@@ -181,20 +181,20 @@ async fn get_shortest_path(pool: &sqlx::PgPool, start_lat: f64, start_lon: f64, 
 async fn get_shortest_path_multiple(
     pool: &sqlx::PgPool,
     points: Vec<(f64, f64)>
-) -> Result<Vec<i64>, io::Error> {
+) -> Result<Vec<[f64; 2]>, io::Error> {
 
     if points.len() < 2 {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "At least two points are required to calculate a path."));
     }
 
-    let mut full_path: Vec<i64> = Vec::new();
+    let mut full_path: Vec<[f64; 2]> = Vec::new();
 
     // Loop through each consecutive pair of points
     for i in 0..points.len() - 1 {
         let (start_lat, start_lon) = points[i];
         let (end_lat, end_lon) = points[i + 1];
 
-        // Get the shortest path between the current pair of points
+        // Get the shortest path between the current pair of points (coordinates)
         let segment_path = get_shortest_path(pool, start_lat, start_lon, end_lat, end_lon).await?;
 
         if i == 0 {
@@ -208,6 +208,7 @@ async fn get_shortest_path_multiple(
 
     Ok(full_path)
 }
+
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
