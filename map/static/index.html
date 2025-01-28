@@ -205,11 +205,16 @@
             }
 
             const route = data.path.map(point => [point[1], point[0]]);
+
+            // Determine the color of the route based on the timeout status
+            const routeColor = data.timeout ? 'red' : 'blue';
+
             routePolyline = L.polyline(route, {
-              color: 'blue',
+              color: routeColor, // Dynamic color based on timeout status
               weight: 4,
               opacity: 0.7
             }).addTo(map);
+
             map.fitBounds(routePolyline.getBounds());
           } else {
             console.error('Invalid path data', data);
